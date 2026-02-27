@@ -1,6 +1,5 @@
 import type { FileNode } from "../filesystem/types";
 import type { RunResult } from "almostnode";
-import JSZip from "jszip";
 
 export interface RuntimeCommandResult {
   ok: boolean;
@@ -198,63 +197,112 @@ export class AlmostNodeRuntime {
     }
 
     const ref = requestedRef || repoJson.default_branch || "main";
-    const archiveRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/zipball/${ref}`, {
-      headers: {
-        accept: "application/vnd.github+json",
+    const commitRes = await fetch(
+      `https://api.github.com/repos/${owner}/${repo}/commits/${encodeURIComponent(ref)}`,
+      {
+        headers: {
+          accept: "application/vnd.github+json",
+        },
       },
-    });
+    );
 
-    if (!archiveRes.ok) {
-      throw new Error(formatGitHubApiError(archiveRes));
+    if (!commitRes.ok) {
+      throw new Error(formatGitHubApiError(commitRes));
     }
 
-    const archiveBlob = await archiveRes.blob();
-    const zip = await JSZip.loadAsync(archiveBlob);
-    const files: FileNode[] = [];
+    const commitJson = (await commitRes.json()) as { sha?: string };
+    const commitSha = commitJson.sha;
+    if (!commitSha) {
+      throw new Error("Could not resolve repository ref to a commit.");
+    }
+
+    const treeRes = await fetch(
+      `https://api.github.com/repos/${owner}/${repo}/git/trees/${commitSha}?recursive=1`,
+      {
+        headers: {
+          accept: "application/vnd.github+json",
+        },
+      },
+    );
+
+    if (!treeRes.ok) {
+      throw new Error(formatGitHubApiError(treeRes));
+    }
+
+    const treeJson = (await treeRes.json()) as {
+      tree?: Array<{ path?: string; type?: string; sha?: string; size?: number }>;
+      truncated?: boolean;
+    };
+
+    if (!Array.isArray(treeJson.tree) || treeJson.tree.length === 0) {
+      throw new Error("Repository tree is empty.");
+    }
+
+    if (treeJson.truncated) {
+      throw new Error("Repository is too large for direct browser import.");
+    }
+
     const maxFileBytes = 1_000_000;
     const maxTotalBytes = 8_000_000;
     const maxFiles = 400;
     let totalBytes = 0;
+    const blobEntries = treeJson.tree
+      .filter((entry) => entry.type === "blob")
+      .filter((entry) => Boolean(entry.path) && Boolean(entry.sha))
+      .filter((entry) => looksLikeTextFile(entry.path ?? ""))
+      .filter((entry) => (entry.size ?? 0) <= maxFileBytes)
+      .slice(0, maxFiles);
 
-    for (const [zipPath, zipEntry] of Object.entries(zip.files)) {
-      if (zipEntry.dir) {
-        continue;
+    const files: FileNode[] = [];
+    const blobs = await mapWithConcurrency(blobEntries, 8, async (entry) => {
+      const blobRes = await fetch(
+        `https://api.github.com/repos/${owner}/${repo}/git/blobs/${entry.sha}`,
+        {
+          headers: {
+            accept: "application/vnd.github+json",
+          },
+        },
+      );
+
+      if (!blobRes.ok) {
+        return null;
       }
 
-      if (!looksLikeTextFile(zipPath)) {
-        continue;
+      const blobJson = (await blobRes.json()) as {
+        content?: string;
+        encoding?: string;
+        size?: number;
+      };
+      if (!blobJson.content || blobJson.encoding !== "base64") {
+        return null;
       }
 
-      if (files.length >= maxFiles) {
-        break;
+      const size = blobJson.size ?? entry.size ?? 0;
+      if (size > maxFileBytes || totalBytes + size > maxTotalBytes) {
+        return null;
       }
 
-      const asBlob = await zipEntry.async("blob");
-      if (asBlob.size > maxFileBytes) {
-        continue;
+      const content = decodeBase64Utf8(blobJson.content);
+      if (content === null) {
+        return null;
       }
 
-      if (totalBytes + asBlob.size > maxTotalBytes) {
-        break;
-      }
-
-      const relative = normalizeImportedPath(zipPath);
-      if (!relative) {
-        continue;
-      }
-
-      const content = await zipEntry.async("string");
-      totalBytes += asBlob.size;
-
-      files.push({
-        path: `/${relative}`,
-        type: "file",
+      totalBytes += size;
+      return {
+        path: `/${entry.path}`,
+        type: "file" as const,
         content,
-      });
+      };
+    });
+
+    for (const file of blobs) {
+      if (file) {
+        files.push(file);
+      }
     }
 
     if (files.length === 0) {
-      throw new Error("No importable text files found in repository archive.");
+      throw new Error("No importable text files found in repository.");
     }
 
     return files;
@@ -288,24 +336,6 @@ function parseRequestedRef(parsed: URL): string | null {
   }
 
   return null;
-}
-
-function normalizeImportedPath(raw: string): string | null {
-  const segments = raw.split("/").filter(Boolean);
-  if (segments.length < 2) {
-    return null;
-  }
-
-  const relative = segments.slice(1).join("/");
-  if (!relative || relative.startsWith(".git/") || relative.includes("/.git/")) {
-    return null;
-  }
-
-  if (relative.includes("..")) {
-    return null;
-  }
-
-  return relative;
 }
 
 function formatGitHubApiError(response: Response): string {
@@ -355,4 +385,46 @@ function looksLikeTextFile(path: string): boolean {
   ];
 
   return !blockedSuffixes.some((suffix) => lower.endsWith(suffix));
+}
+
+function decodeBase64Utf8(value: string): string | null {
+  const normalized = value.replaceAll("\n", "");
+  const binary = atob(normalized);
+  const bytes = new Uint8Array(binary.length);
+
+  for (let i = 0; i < binary.length; i += 1) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+
+  try {
+    return new TextDecoder("utf-8", { fatal: false }).decode(bytes);
+  } catch {
+    return null;
+  }
+}
+
+async function mapWithConcurrency<TIn, TOut>(
+  input: TIn[],
+  limit: number,
+  mapper: (item: TIn) => Promise<TOut>,
+): Promise<TOut[]> {
+  const result: TOut[] = new Array(input.length);
+  let nextIndex = 0;
+
+  async function runWorker(): Promise<void> {
+    while (true) {
+      const index = nextIndex;
+      nextIndex += 1;
+
+      if (index >= input.length) {
+        return;
+      }
+
+      result[index] = await mapper(input[index]);
+    }
+  }
+
+  const workers = Array.from({ length: Math.min(limit, input.length) }, () => runWorker());
+  await Promise.all(workers);
+  return result;
 }
