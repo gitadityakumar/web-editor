@@ -12,7 +12,9 @@ interface WorkspaceState {
   writeActiveFile: (content: string) => void;
   addFile: (path: string) => void;
   deleteFile: (path: string) => void;
-  appendTerminalOutput: (line: string) => void;
+  appendTerminalOutput: (text: string) => void;
+  appendTerminalLine: (line: string) => void;
+  clearTerminalOutput: () => void;
   importFiles: (files: FileNode[]) => void;
 }
 
@@ -67,9 +69,18 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     set({ files, activePath });
   },
 
-  appendTerminalOutput: (line) => {
+  appendTerminalOutput: (text) => {
+    const state = get();
+    set({ terminalOutput: `${state.terminalOutput}${text}` });
+  },
+
+  appendTerminalLine: (line) => {
     const state = get();
     set({ terminalOutput: `${state.terminalOutput}${line}\n` });
+  },
+
+  clearTerminalOutput: () => {
+    set({ terminalOutput: "" });
   },
 
   importFiles: (input) => {

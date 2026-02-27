@@ -10,7 +10,7 @@ interface LazyMonacoEditorProps {
 
 export function LazyMonacoEditor(props: LazyMonacoEditorProps) {
   return (
-    <Suspense fallback={<div className="panel-body">Loading editor...</div>}>
+    <Suspense fallback={<div className="p-3 text-xs text-[#8f9bb3]">Loading editor...</div>}>
       <MonacoEditor {...props} />
     </Suspense>
   );
