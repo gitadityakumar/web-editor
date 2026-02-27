@@ -92,6 +92,15 @@ function StopIcon({ className }: IconProps) {
   );
 }
 
+function RestartIcon({ className }: IconProps) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24">
+      <path d="M5 12a7 7 0 1 0 2-4.9" stroke="currentColor" strokeWidth="1.7" />
+      <path d="M5 5v4h4" stroke="currentColor" strokeWidth="1.7" />
+    </svg>
+  );
+}
+
 function ExportIcon({ className }: IconProps) {
   return (
     <svg className={className} fill="none" viewBox="0 0 24 24">
@@ -164,7 +173,10 @@ export function WorkspaceShell() {
     activePath,
     dirtyPaths,
     terminalOutput,
+    hasHydrated,
+    importInProgress,
     setActivePath,
+    hydrateFromPersistence,
     writeActiveFile,
     addFile,
     deleteFile,
@@ -174,6 +186,7 @@ export function WorkspaceShell() {
     appendTerminalLine,
     clearTerminalOutput,
     importFiles,
+    setImportInProgress,
   } = useWorkspaceStore();
 
   const [gitUrl, setGitUrl] = useState("");
@@ -198,6 +211,7 @@ export function WorkspaceShell() {
   const runtime = useMemo(() => new AlmostNodeRuntime(), []);
   const activeFile = files.find((item) => item.path === activePath);
   const shellRef = useRef<HTMLDivElement | null>(null);
+  const terminalOutputRef = useRef<HTMLPreElement | null>(null);
   const gitInputRef = useRef<HTMLInputElement | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const paletteInputRef = useRef<HTMLInputElement | null>(null);
@@ -235,6 +249,10 @@ export function WorkspaceShell() {
 
     return matches;
   }, [files, searchQuery]);
+
+  useEffect(() => {
+    void hydrateFromPersistence();
+  }, [hydrateFromPersistence]);
 
   useEffect(() => {
     if (!isResizingSidebar) {
@@ -321,6 +339,15 @@ export function WorkspaceShell() {
   }, [showCommandPalette]);
 
   useEffect(() => {
+    const pre = terminalOutputRef.current;
+    if (!pre) {
+      return;
+    }
+
+    pre.scrollTop = pre.scrollHeight;
+  }, [terminalOutput, isCommandRunning]);
+
+  useEffect(() => {
     function handleBeforeUnload(event: BeforeUnloadEvent): void {
       if (!hasUnsavedChanges) {
         return;
@@ -381,6 +408,16 @@ export function WorkspaceShell() {
     appendTerminalLine("[stop] requested");
   }
 
+  async function restartRuntime(): Promise<void> {
+    try {
+      await runtime.restart();
+      appendTerminalLine("[runtime] restarted");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      appendTerminalLine(`[error] runtime restart failed: ${message}`);
+    }
+  }
+
   async function handleExport(): Promise<void> {
     const blob = await exportProjectZip(files, "almostnode-project");
     triggerDownload(blob, "almostnode-project.zip");
@@ -394,14 +431,17 @@ export function WorkspaceShell() {
     }
 
     try {
+      setImportInProgress(true);
       appendTerminalLine(`Importing ${gitUrl} ...`);
       const imported = await runtime.importFromGitHubUrl(gitUrl);
-      importFiles(imported);
+      await importFiles(imported);
       setGitUrl("");
       appendTerminalLine("Repository import complete.");
     } catch (error) {
       const message = error instanceof Error ? error.message : "Import failed.";
       appendTerminalLine(message);
+    } finally {
+      setImportInProgress(false);
     }
   }
 
@@ -424,13 +464,13 @@ export function WorkspaceShell() {
     setIsTerminalMinimized((prev) => !prev);
   }, []);
 
-  const handleSaveAll = useCallback((): void => {
-    saveAll();
-    appendTerminalLine("Saved workspace snapshot.");
+  const handleSaveAll = useCallback(async (): Promise<void> => {
+    await saveAll();
+    appendTerminalLine("Saved workspace snapshot to IndexedDB.");
   }, [appendTerminalLine, saveAll]);
 
-  const handleRollbackSnapshot = useCallback((): void => {
-    const rolledBack = rollbackToPreviousSnapshot();
+  const handleRollbackSnapshot = useCallback(async (): Promise<void> => {
+    const rolledBack = await rollbackToPreviousSnapshot();
     if (!rolledBack) {
       appendTerminalLine("No previous snapshot available.");
     }
@@ -498,13 +538,17 @@ export function WorkspaceShell() {
       id: "save-all",
       label: "Save all files",
       keywords: "save persist snapshot",
-      run: handleSaveAll,
+      run: () => {
+        void handleSaveAll();
+      },
     },
     {
       id: "rollback",
       label: "Rollback to previous snapshot",
       keywords: "revert restore history snapshot",
-      run: handleRollbackSnapshot,
+      run: () => {
+        void handleRollbackSnapshot();
+      },
     },
     {
       id: "search",
@@ -523,6 +567,14 @@ export function WorkspaceShell() {
       label: "Toggle terminal",
       keywords: "terminal panel",
       run: toggleTerminalMinimized,
+    },
+    {
+      id: "restart-runtime",
+      label: "Restart runtime",
+      keywords: "runtime restart reboot",
+      run: () => {
+        void restartRuntime();
+      },
     },
     {
       id: "clear-terminal",
@@ -560,7 +612,7 @@ export function WorkspaceShell() {
 
       if (event.key.toLowerCase() === "s") {
         event.preventDefault();
-        handleSaveAll();
+        void handleSaveAll();
         return;
       }
 
@@ -725,10 +777,11 @@ export function WorkspaceShell() {
               />
               <button
                 className="cursor-pointer rounded-md border border-[#2e3d5c] bg-[#1a2640] px-2.5 py-1.5 text-[#dbe7ff]"
+                disabled={importInProgress}
                 onClick={() => void handleGitImport()}
                 type="button"
               >
-                Import From Git URL
+                {importInProgress ? "Importing..." : "Import From Git URL"}
               </button>
             </div>
           ) : sidebarView === "search" ? (
@@ -861,7 +914,7 @@ export function WorkspaceShell() {
                 <button
                   aria-label="Save All"
                   className={iconBtnClass}
-                  onClick={handleSaveAll}
+                  onClick={() => void handleSaveAll()}
                   title="Save All (Ctrl/Cmd + S)"
                   type="button"
                 >
@@ -870,7 +923,7 @@ export function WorkspaceShell() {
                 <button
                   aria-label="Rollback Snapshot"
                   className={iconBtnClass}
-                  onClick={handleRollbackSnapshot}
+                  onClick={() => void handleRollbackSnapshot()}
                   title="Rollback Snapshot"
                   type="button"
                 >
@@ -888,6 +941,15 @@ export function WorkspaceShell() {
                   ) : (
                     <MinimizeIcon className="size-[15px]" />
                   )}
+                </button>
+                <button
+                  aria-label="Restart Runtime"
+                  className={iconBtnClass}
+                  onClick={() => void restartRuntime()}
+                  title="Restart Runtime"
+                  type="button"
+                >
+                  <RestartIcon className="size-[15px]" />
                 </button>
                 <button
                   aria-label="Clear Terminal"
@@ -925,7 +987,10 @@ export function WorkspaceShell() {
             </div>
 
             {!isTerminalMinimized ? (
-              <pre className="m-0 overflow-auto px-3 py-2.5 text-[12px] leading-[1.45] text-[#a9bfdf]">
+              <pre
+                className="m-0 overflow-auto px-3 py-2.5 text-[12px] leading-[1.45] text-[#a9bfdf]"
+                ref={terminalOutputRef}
+              >
                 {terminalOutput || "$ ready\nType a command and press Enter"}
               </pre>
             ) : null}
@@ -935,9 +1000,16 @@ export function WorkspaceShell() {
                 <span className="text-xs text-[#6f7a93]">$</span>
                 <input
                   className="h-8 w-full border-0 bg-transparent text-xs text-[#d8e4fd] outline-none"
+                  disabled={!hasHydrated}
                   onChange={(event) => setTerminalInput(event.target.value)}
                   onKeyDown={handleTerminalInputKeyDown}
-                  placeholder={isCommandRunning ? "Send input to running command" : "pnpm install"}
+                  placeholder={
+                    !hasHydrated
+                      ? "Loading workspace..."
+                      : isCommandRunning
+                        ? "Send input to running command"
+                        : "pnpm install"
+                  }
                   value={terminalInput}
                 />
               </div>

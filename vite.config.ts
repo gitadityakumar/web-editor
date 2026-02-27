@@ -33,6 +33,8 @@ export default defineConfig({
       "sprintf-js": "/src/shims/sprintf.ts",
       "node:zlib": "/src/shims/node-zlib.ts",
       zlib: "/src/shims/node-zlib.ts",
+      "node:module": "/src/shims/node-module.ts",
+      module: "/src/shims/node-module.ts",
     },
   },
   optimizeDeps: {

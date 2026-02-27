@@ -6,7 +6,39 @@ export function exportProject(files: FileNode[]): string {
 }
 
 export function importProject(serialized: string): FileNode[] {
-  return JSON.parse(serialized) as FileNode[];
+  const parsed = JSON.parse(serialized) as unknown;
+  if (!Array.isArray(parsed)) {
+    throw new Error("Invalid import format. Expected an array of files.");
+  }
+
+  const normalized: FileNode[] = [];
+  for (const item of parsed) {
+    if (typeof item !== "object" || item === null) {
+      continue;
+    }
+
+    const entry = item as Partial<FileNode>;
+    if (entry.type !== "file" || typeof entry.path !== "string") {
+      continue;
+    }
+
+    const cleanPath = sanitizePath(entry.path);
+    if (!cleanPath) {
+      continue;
+    }
+
+    normalized.push({
+      path: cleanPath,
+      type: "file",
+      content: typeof entry.content === "string" ? entry.content : "",
+    });
+  }
+
+  if (normalized.length === 0) {
+    throw new Error("No valid files found in imported payload.");
+  }
+
+  return normalized;
 }
 
 export async function exportProjectZip(files: FileNode[], projectName: string): Promise<Blob> {
@@ -39,5 +71,41 @@ export function triggerDownload(blob: Blob, fileName: string): void {
 }
 
 export function isGitHubRepoUrl(url: string): boolean {
-  return /^https:\/\/github\.com\/[^/]+\/[^/]+(?:\.git)?\/?$/.test(url.trim());
+  try {
+    const parsed = new URL(normalizeGitHubUrl(url));
+    if (parsed.hostname !== "github.com") {
+      return false;
+    }
+
+    const parts = parsed.pathname.split("/").filter(Boolean);
+    if (parts.length < 2) {
+      return false;
+    }
+
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function normalizeGitHubUrl(url: string): string {
+  const value = url.trim();
+  if (value.startsWith("https://")) {
+    return value;
+  }
+
+  if (value.startsWith("http://")) {
+    return `https://${value.slice("http://".length)}`;
+  }
+
+  return `https://${value}`;
+}
+
+function sanitizePath(raw: string): string | null {
+  const normalized = raw.startsWith("/") ? raw : `/${raw}`;
+  if (normalized.includes("..")) {
+    return null;
+  }
+
+  return normalized;
 }

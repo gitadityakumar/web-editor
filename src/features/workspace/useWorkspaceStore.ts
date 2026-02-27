@@ -7,41 +7,42 @@ import {
   saveWorkspace,
 } from "../../persistence/workspaceStore";
 
+const MAX_TERMINAL_BUFFER = 120_000;
+
 interface WorkspaceState {
   vfs: VirtualFileSystem;
   files: FileNode[];
   activePath: string;
   dirtyPaths: string[];
   terminalOutput: string;
+  hasHydrated: boolean;
+  importInProgress: boolean;
   setActivePath: (path: string) => void;
+  hydrateFromPersistence: () => Promise<void>;
   writeActiveFile: (content: string) => void;
   addFile: (path: string) => void;
   deleteFile: (path: string) => void;
-  saveAll: () => void;
-  rollbackToPreviousSnapshot: () => boolean;
+  saveAll: () => Promise<void>;
+  rollbackToPreviousSnapshot: () => Promise<boolean>;
   appendTerminalOutput: (text: string) => void;
   appendTerminalLine: (line: string) => void;
   clearTerminalOutput: () => void;
-  importFiles: (files: FileNode[]) => void;
+  importFiles: (files: FileNode[]) => Promise<void>;
+  setImportInProgress: (value: boolean) => void;
 }
 
-function hydrateVfs(): { vfs: VirtualFileSystem; files: FileNode[]; activePath: string } {
-  const saved = loadWorkspace();
-
-  if (saved?.length) {
-    const vfs = new VirtualFileSystem(saved);
-    const files = vfs.listFiles();
-
-    return { vfs, files, activePath: files[0].path };
-  }
-
+function createInitialWorkspace(): {
+  vfs: VirtualFileSystem;
+  files: FileNode[];
+  activePath: string;
+} {
   const vfs = createDefaultVfs();
   const files = vfs.listFiles();
 
   return { vfs, files, activePath: files[0].path };
 }
 
-const initial = hydrateVfs();
+const initial = createInitialWorkspace();
 
 function addDirtyPath(dirtyPaths: string[], path: string): string[] {
   if (dirtyPaths.includes(path)) {
@@ -57,8 +58,34 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   activePath: initial.activePath,
   dirtyPaths: [],
   terminalOutput: "",
+  hasHydrated: false,
+  importInProgress: false,
 
   setActivePath: (path) => set({ activePath: path }),
+  setImportInProgress: (value) => set({ importInProgress: value }),
+
+  hydrateFromPersistence: async () => {
+    try {
+      const saved = await loadWorkspace();
+      if (!saved?.length) {
+        set({ hasHydrated: true });
+        return;
+      }
+
+      const vfs = new VirtualFileSystem(saved);
+      const files = vfs.listFiles();
+
+      set({
+        vfs,
+        files,
+        activePath: files[0]?.path ?? "",
+        dirtyPaths: [],
+        hasHydrated: true,
+      });
+    } catch {
+      set({ hasHydrated: true });
+    }
+  },
 
   writeActiveFile: (content) => {
     const state = get();
@@ -75,7 +102,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     const state = get();
     state.vfs.writeFile(path, "");
     const files = state.vfs.listFiles();
-    saveWorkspace(files);
+    void saveWorkspace(files);
 
     set({
       files,
@@ -89,7 +116,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     state.vfs.deleteFile(path);
     const files = state.vfs.listFiles();
     const activePath = files[0]?.path ?? "";
-    saveWorkspace(files);
+    void saveWorkspace(files);
 
     set({
       files,
@@ -98,14 +125,14 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     });
   },
 
-  saveAll: () => {
+  saveAll: async () => {
     const state = get();
-    saveWorkspace(state.files);
+    await saveWorkspace(state.files);
     set({ dirtyPaths: [] });
   },
 
-  rollbackToPreviousSnapshot: () => {
-    const previous = loadPreviousWorkspaceSnapshot();
+  rollbackToPreviousSnapshot: async () => {
+    const previous = await loadPreviousWorkspaceSnapshot();
     if (!previous?.length) {
       return false;
     }
@@ -126,22 +153,24 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
 
   appendTerminalOutput: (text) => {
     const state = get();
-    set({ terminalOutput: `${state.terminalOutput}${text}` });
+    const next = `${state.terminalOutput}${text}`.slice(-MAX_TERMINAL_BUFFER);
+    set({ terminalOutput: next });
   },
 
   appendTerminalLine: (line) => {
     const state = get();
-    set({ terminalOutput: `${state.terminalOutput}${line}\n` });
+    const next = `${state.terminalOutput}${line}\n`.slice(-MAX_TERMINAL_BUFFER);
+    set({ terminalOutput: next });
   },
 
   clearTerminalOutput: () => {
     set({ terminalOutput: "" });
   },
 
-  importFiles: (input) => {
+  importFiles: async (input) => {
     const vfs = new VirtualFileSystem(input);
     const files = vfs.listFiles();
-    saveWorkspace(files);
+    await saveWorkspace(files);
 
     set({
       vfs,

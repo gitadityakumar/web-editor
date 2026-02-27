@@ -17,7 +17,14 @@ fs.mkdirSync(publicDir, { recursive: true });
 fs.mkdirSync(assetsOut, { recursive: true });
 
 const distAssets = path.join(almostnodeDist, "assets");
+let copiedRuntimeWorkers = 0;
 if (fs.existsSync(distAssets)) {
+  for (const existing of fs.readdirSync(assetsOut)) {
+    if (existing.startsWith("runtime-worker-")) {
+      fs.rmSync(path.join(assetsOut, existing), { force: true });
+    }
+  }
+
   for (const file of fs.readdirSync(distAssets)) {
     if (!file.startsWith("runtime-worker-")) {
       continue;
@@ -26,6 +33,7 @@ if (fs.existsSync(distAssets)) {
     const src = path.join(distAssets, file);
     const dest = path.join(assetsOut, file);
     fs.copyFileSync(src, dest);
+    copiedRuntimeWorkers += 1;
     console.log(`[prepare-almostnode-assets] copied ${file}`);
   }
 }
@@ -35,4 +43,14 @@ const serviceWorkerDest = path.join(publicDir, "__sw__.js");
 if (fs.existsSync(serviceWorkerSrc)) {
   fs.copyFileSync(serviceWorkerSrc, serviceWorkerDest);
   console.log("[prepare-almostnode-assets] copied __sw__.js");
+}
+
+if (copiedRuntimeWorkers === 0) {
+  console.error("[prepare-almostnode-assets] no runtime worker assets found.");
+  process.exit(1);
+}
+
+if (!fs.existsSync(serviceWorkerDest)) {
+  console.error("[prepare-almostnode-assets] __sw__.js was not copied.");
+  process.exit(1);
 }

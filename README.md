@@ -20,15 +20,15 @@ pnpm dev
 ## Current state
 
 - Workspace shell with files panel, editor panel, and terminal output panel.
-- In-memory virtual filesystem with local persistence.
+- In-memory virtual filesystem with IndexedDB-backed persistence and snapshots.
 - Lazy Monaco editor load for startup performance.
-- Git URL import-first flow (public GitHub repo URL).
+- Git URL import flow with branch/ref support and clearer API error handling.
 - Export downloads the current project as a `.zip` file.
-- `AlmostNodeRuntime` wired with `createContainer`, file sync, and command execution.
+- `AlmostNodeRuntime` wired with boot/shutdown/restart lifecycle, sync cleanup, and command execution guards.
 
 ## Next implementation targets
 
-1. Add full git import support (branches/private repos/auth, not just public main/master fallback).
-2. Move localStorage persistence to IndexedDB with versioned snapshots.
-3. Add command queue and robust runtime lifecycle controls.
-4. Replace basic terminal output with streaming process logs.
+1. Add command queue + concurrency controls around runtime commands.
+2. Add a dedicated problems/diagnostics panel.
+3. Add performance metrics dashboard and memory budget enforcement.
+4. Expand pnpm-first workflow helpers in terminal/command palette.
