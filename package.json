@@ -1,0 +1,41 @@
+{
+  "name": "almostnode-web-editor",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "prepare": "husky",
+    "predev": "node scripts/prepare-almostnode-assets.mjs",
+    "prebuild": "node scripts/prepare-almostnode-assets.mjs",
+    "precommit": "pnpm lint && pnpm typecheck",
+    "dev": "vite",
+    "build": "pnpm typecheck && vite build",
+    "preview": "vite preview",
+    "lint": "oxlint --config .oxlintrc.json --deny-warnings src vite.config.ts",
+    "lint:fix": "pnpm lint --fix",
+    "format": "oxfmt --config .oxfmtrc.json --write .",
+    "format:check": "oxfmt --config .oxfmtrc.json --check .",
+    "typecheck": "tsgo --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@monaco-editor/react": "^4.7.0",
+    "almostnode": "latest",
+    "jszip": "^3.10.1",
+    "monaco-editor": "^0.52.2",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "zustand": "^5.0.3"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.18",
+    "@types/react-dom": "^18.3.5",
+    "@typescript/native-preview": "7.0.0-dev.20260227.1",
+    "@vitejs/plugin-react": "^4.4.1",
+    "husky": "^9.1.7",
+    "oxfmt": "^0.35.0",
+    "oxlint": "^1.50.0",
+    "typescript": "^5.7.3",
+    "vite": "^6.0.7"
+  },
+  "packageManager": "pnpm@10.6.5"
+}

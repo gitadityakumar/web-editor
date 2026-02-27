@@ -1,0 +1,12 @@
+{
+  "$schema": "./node_modules/oxfmt/configuration_schema.json",
+  "ignorePatterns": [
+    "dist/**",
+    "node_modules/**",
+    ".pnpm-store/**",
+    ".work/**",
+    "public/__sw__.js",
+    "public/assets/runtime-worker-*.js",
+    "public/assets/runtime-worker-*.js.map"
+  ]
+}

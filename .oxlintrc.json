@@ -1,0 +1,25 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["import", "react", "jsx-a11y"],
+  "categories": {
+    "correctness": "deny",
+    "suspicious": "deny"
+  },
+  "env": {
+    "builtin": true
+  },
+  "rules": {
+    "react-in-jsx-scope": "off",
+    "no-unassigned-import": "off",
+    "no-named-as-default": "off"
+  },
+  "ignorePatterns": [
+    "dist/**",
+    "node_modules/**",
+    ".pnpm-store/**",
+    ".work/**",
+    "public/__sw__.js",
+    "public/assets/runtime-worker-*.js",
+    "public/assets/runtime-worker-*.js.map"
+  ]
+}
