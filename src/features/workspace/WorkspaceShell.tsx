@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
 import { AlmostNodeRuntime } from "../../runtime/almostNodeRuntime";
 import { LazyMonacoEditor } from "../editor/LazyMonacoEditor";
@@ -16,8 +16,17 @@ const SIDEBAR_COLLAPSE_THRESHOLD = 190;
 const MIN_TERMINAL_HEIGHT = 140;
 const MAX_TERMINAL_HEIGHT = 520;
 const TERMINAL_COLLAPSED_HEIGHT = 34;
+const MAX_SEARCH_RESULTS = 200;
 
 type IconProps = { className?: string };
+type SidebarView = "explorer" | "import" | "search";
+
+interface SearchResult {
+  path: string;
+  line: number;
+  column: number;
+  preview: string;
+}
 
 function FilesIcon({ className }: IconProps) {
   return (
@@ -93,6 +102,24 @@ function ExportIcon({ className }: IconProps) {
   );
 }
 
+function SaveIcon({ className }: IconProps) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24">
+      <path d="M5 5h12l2 2v12H5z" stroke="currentColor" strokeWidth="1.7" />
+      <path d="M8 5v5h8V5M8 19v-6h8v6" stroke="currentColor" strokeWidth="1.7" />
+    </svg>
+  );
+}
+
+function HistoryIcon({ className }: IconProps) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24">
+      <path d="M5 12a7 7 0 1 0 2-4.9" stroke="currentColor" strokeWidth="1.7" />
+      <path d="M5 5v4h4M12 8v4l3 2" stroke="currentColor" strokeWidth="1.7" />
+    </svg>
+  );
+}
+
 function MinimizeIcon({ className }: IconProps) {
   return (
     <svg className={className} fill="none" viewBox="0 0 24 24">
@@ -135,11 +162,14 @@ export function WorkspaceShell() {
   const {
     files,
     activePath,
+    dirtyPaths,
     terminalOutput,
     setActivePath,
     writeActiveFile,
     addFile,
     deleteFile,
+    saveAll,
+    rollbackToPreviousSnapshot,
     appendTerminalOutput,
     appendTerminalLine,
     clearTerminalOutput,
@@ -147,7 +177,10 @@ export function WorkspaceShell() {
   } = useWorkspaceStore();
 
   const [gitUrl, setGitUrl] = useState("");
-  const [showGitImportPanel, setShowGitImportPanel] = useState(false);
+  const [sidebarView, setSidebarView] = useState<SidebarView>("explorer");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [showCommandPalette, setShowCommandPalette] = useState(false);
+  const [paletteQuery, setPaletteQuery] = useState("");
 
   const [sidebarWidth, setSidebarWidth] = useState(280);
   const [isResizingSidebar, setIsResizingSidebar] = useState(false);
@@ -165,6 +198,43 @@ export function WorkspaceShell() {
   const runtime = useMemo(() => new AlmostNodeRuntime(), []);
   const activeFile = files.find((item) => item.path === activePath);
   const shellRef = useRef<HTMLDivElement | null>(null);
+  const gitInputRef = useRef<HTMLInputElement | null>(null);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
+  const paletteInputRef = useRef<HTMLInputElement | null>(null);
+  const hasUnsavedChanges = dirtyPaths.length > 0;
+  const isFileDirty = dirtyPaths.includes(activePath);
+
+  const searchResults = useMemo(() => {
+    const needle = searchQuery.trim().toLowerCase();
+    if (!needle) {
+      return [] as SearchResult[];
+    }
+
+    const matches: SearchResult[] = [];
+    for (const file of files) {
+      const lines = (file.content ?? "").split(/\r?\n/u);
+      for (let index = 0; index < lines.length; index += 1) {
+        const lineText = lines[index];
+        const column = lineText.toLowerCase().indexOf(needle);
+        if (column === -1) {
+          continue;
+        }
+
+        matches.push({
+          path: file.path,
+          line: index + 1,
+          column: column + 1,
+          preview: lineText.trim() || "(empty line)",
+        });
+
+        if (matches.length >= MAX_SEARCH_RESULTS) {
+          return matches;
+        }
+      }
+    }
+
+    return matches;
+  }, [files, searchQuery]);
 
   useEffect(() => {
     if (!isResizingSidebar) {
@@ -230,6 +300,41 @@ export function WorkspaceShell() {
       window.removeEventListener("pointerup", onPointerUp);
     };
   }, [isResizingTerminal]);
+
+  useEffect(() => {
+    if (sidebarView === "import") {
+      gitInputRef.current?.focus();
+      return;
+    }
+
+    if (sidebarView === "search") {
+      searchInputRef.current?.focus();
+    }
+  }, [sidebarView]);
+
+  useEffect(() => {
+    if (!showCommandPalette) {
+      return;
+    }
+
+    paletteInputRef.current?.focus();
+  }, [showCommandPalette]);
+
+  useEffect(() => {
+    function handleBeforeUnload(event: BeforeUnloadEvent): void {
+      if (!hasUnsavedChanges) {
+        return;
+      }
+
+      event.preventDefault();
+      event.returnValue = "";
+    }
+
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => {
+      window.removeEventListener("beforeunload", handleBeforeUnload);
+    };
+  }, [hasUnsavedChanges]);
 
   async function runTerminalCommand(rawCommand: string): Promise<void> {
     const command = rawCommand.trim();
@@ -302,17 +407,34 @@ export function WorkspaceShell() {
 
   function openExplorer(): void {
     setIsExplorerCollapsed(false);
-    setShowGitImportPanel(false);
+    setSidebarView("explorer");
   }
 
   function toggleGitPanel(): void {
     setIsExplorerCollapsed(false);
-    setShowGitImportPanel((prev) => !prev);
+    setSidebarView((prev) => (prev === "import" ? "explorer" : "import"));
   }
 
-  function toggleTerminalMinimized(): void {
-    setIsTerminalMinimized((prev) => !prev);
+  function toggleSearchPanel(): void {
+    setIsExplorerCollapsed(false);
+    setSidebarView((prev) => (prev === "search" ? "explorer" : "search"));
   }
+
+  const toggleTerminalMinimized = useCallback((): void => {
+    setIsTerminalMinimized((prev) => !prev);
+  }, []);
+
+  const handleSaveAll = useCallback((): void => {
+    saveAll();
+    appendTerminalLine("Saved workspace snapshot.");
+  }, [appendTerminalLine, saveAll]);
+
+  const handleRollbackSnapshot = useCallback((): void => {
+    const rolledBack = rollbackToPreviousSnapshot();
+    if (!rolledBack) {
+      appendTerminalLine("No previous snapshot available.");
+    }
+  }, [appendTerminalLine, rollbackToPreviousSnapshot]);
 
   function handleTerminalInputKeyDown(event: KeyboardEvent<HTMLInputElement>): void {
     if (event.key === "Enter") {
@@ -362,6 +484,136 @@ export function WorkspaceShell() {
     }
   }
 
+  const paletteCommands = [
+    {
+      id: "run-file",
+      label: "Run active file",
+      keywords: "run execute node",
+      disabled: !activePath,
+      run: () => {
+        void runCurrentFile();
+      },
+    },
+    {
+      id: "save-all",
+      label: "Save all files",
+      keywords: "save persist snapshot",
+      run: handleSaveAll,
+    },
+    {
+      id: "rollback",
+      label: "Rollback to previous snapshot",
+      keywords: "revert restore history snapshot",
+      run: handleRollbackSnapshot,
+    },
+    {
+      id: "search",
+      label: "Open project search",
+      keywords: "find grep search",
+      run: toggleSearchPanel,
+    },
+    {
+      id: "git-import",
+      label: "Open Git import panel",
+      keywords: "import github repo",
+      run: toggleGitPanel,
+    },
+    {
+      id: "toggle-terminal",
+      label: "Toggle terminal",
+      keywords: "terminal panel",
+      run: toggleTerminalMinimized,
+    },
+    {
+      id: "clear-terminal",
+      label: "Clear terminal output",
+      keywords: "clear terminal",
+      run: clearTerminalOutput,
+    },
+    {
+      id: "export-zip",
+      label: "Export workspace zip",
+      keywords: "download export zip",
+      run: () => {
+        void handleExport();
+      },
+    },
+  ];
+
+  const filteredPaletteCommands = (() => {
+    const query = paletteQuery.trim().toLowerCase();
+    if (!query) {
+      return paletteCommands;
+    }
+
+    return paletteCommands.filter((command) => {
+      return `${command.label} ${command.keywords}`.toLowerCase().includes(query);
+    });
+  })();
+
+  useEffect(() => {
+    function onWindowKeyDown(event: globalThis.KeyboardEvent): void {
+      const isModifier = event.metaKey || event.ctrlKey;
+      if (!isModifier) {
+        return;
+      }
+
+      if (event.key.toLowerCase() === "s") {
+        event.preventDefault();
+        handleSaveAll();
+        return;
+      }
+
+      if (event.key.toLowerCase() === "f") {
+        event.preventDefault();
+        setIsExplorerCollapsed(false);
+        setSidebarView("search");
+        return;
+      }
+
+      if (event.shiftKey && event.key.toLowerCase() === "p") {
+        event.preventDefault();
+        setShowCommandPalette(true);
+        setPaletteQuery("");
+        return;
+      }
+
+      if (event.key === "`") {
+        event.preventDefault();
+        toggleTerminalMinimized();
+      }
+    }
+
+    window.addEventListener("keydown", onWindowKeyDown);
+    return () => {
+      window.removeEventListener("keydown", onWindowKeyDown);
+    };
+  }, [handleSaveAll, toggleTerminalMinimized]);
+
+  function runPaletteCommand(index: number): void {
+    const selected = filteredPaletteCommands[index];
+    if (!selected || selected.disabled) {
+      return;
+    }
+
+    selected.run();
+    setShowCommandPalette(false);
+    setPaletteQuery("");
+  }
+
+  function onPaletteInputKeyDown(event: KeyboardEvent<HTMLInputElement>): void {
+    if (event.key === "Escape") {
+      setShowCommandPalette(false);
+      setPaletteQuery("");
+      return;
+    }
+
+    if (event.key === "Enter") {
+      event.preventDefault();
+      runPaletteCommand(0);
+    }
+  }
+
   return (
     <div
       className="grid h-full grid-rows-[44px_1fr] overflow-hidden bg-[radial-gradient(circle_at_80%_0%,#182338,#0f111a_55%)] text-[#d5dbe7]"
@@ -384,7 +636,7 @@ export function WorkspaceShell() {
         >
           <button
             aria-label="Explorer"
-            className={`${activityBtnClass} ${!showGitImportPanel ? "bg-[#1a2133] text-[#d7e4ff]" : ""}`}
+            className={`${activityBtnClass} ${sidebarView === "explorer" ? "bg-[#1a2133] text-[#d7e4ff]" : ""}`}
             onClick={openExplorer}
             title="Explorer"
             type="button"
@@ -393,14 +645,20 @@ export function WorkspaceShell() {
           </button>
           <button
             aria-label="Git Import"
-            className={`${activityBtnClass} ${showGitImportPanel ? "bg-[#1a2133] text-[#d7e4ff]" : ""}`}
+            className={`${activityBtnClass} ${sidebarView === "import" ? "bg-[#1a2133] text-[#d7e4ff]" : ""}`}
             onClick={toggleGitPanel}
             title="Git Import"
             type="button"
           >
             <ImportIcon className="size-[18px]" />
           </button>
-          <button aria-label="Search" className={activityBtnClass} title="Search" type="button">
+          <button
+            aria-label="Search"
+            className={`${activityBtnClass} ${sidebarView === "search" ? "bg-[#1a2133] text-[#d7e4ff]" : ""}`}
+            onClick={toggleSearchPanel}
+            title="Search"
+            type="button"
+          >
             <SearchIcon className="size-[18px]" />
           </button>
           <button
@@ -418,16 +676,31 @@ export function WorkspaceShell() {
           style={{ visibility: isExplorerCollapsed ? "hidden" : "visible" }}
         >
           <div className="flex h-10 items-center justify-between border-b border-[#23293a] px-3 text-[12px] tracking-[0.8px] text-[#8f9bb3]">
-            <span>{showGitImportPanel ? "GITHUB IMPORT" : "EXPLORER"}</span>
+            <span>
+              {sidebarView === "import"
+                ? "GITHUB IMPORT"
+                : sidebarView === "search"
+                  ? "SEARCH"
+                  : "EXPLORER"}
+            </span>
             <div className="flex gap-1.5">
               <button
-                aria-label={showGitImportPanel ? "Show Explorer" : "Show Git Import"}
+                aria-label={sidebarView === "import" ? "Show Explorer" : "Show Git Import"}
                 className={iconBtnClass}
                 onClick={toggleGitPanel}
-                title={showGitImportPanel ? "Show Explorer" : "Show Git Import"}
+                title={sidebarView === "import" ? "Show Explorer" : "Show Git Import"}
                 type="button"
               >
                 <ImportIcon className="size-[15px]" />
+              </button>
+              <button
+                aria-label={sidebarView === "search" ? "Show Explorer" : "Show Search"}
+                className={iconBtnClass}
+                onClick={toggleSearchPanel}
+                title={sidebarView === "search" ? "Show Explorer" : "Show Search"}
+                type="button"
+              >
+                <SearchIcon className="size-[15px]" />
               </button>
               <button
                 aria-label="New File"
@@ -441,10 +714,11 @@ export function WorkspaceShell() {
             </div>
           </div>
 
-          {showGitImportPanel ? (
+          {sidebarView === "import" ? (
             <div className="grid gap-2.5 p-2.5">
               <input
                 className="w-full rounded-md border border-[#28324a] bg-[#0f1628] px-2.5 py-2 text-[#dde7fb]"
+                ref={gitInputRef}
                 onChange={(event) => setGitUrl(event.target.value)}
                 placeholder="https://github.com/owner/repo"
                 value={gitUrl}
@@ -457,10 +731,43 @@ export function WorkspaceShell() {
                 Import From Git URL
               </button>
             </div>
+          ) : sidebarView === "search" ? (
+            <div className="flex min-h-0 flex-1 flex-col gap-2 p-2.5">
+              <input
+                className="w-full rounded-md border border-[#28324a] bg-[#0f1628] px-2.5 py-2 text-[#dde7fb] outline-none"
+                onChange={(event) => setSearchQuery(event.target.value)}
+                placeholder="Search across files..."
+                ref={searchInputRef}
+                value={searchQuery}
+              />
+              <div className="text-[11px] text-[#7f8aa4]">
+                {searchQuery.trim()
+                  ? `${searchResults.length} result${searchResults.length === 1 ? "" : "s"}`
+                  : "Type to search"}
+              </div>
+              <div className="min-h-0 overflow-auto pr-0.5">
+                {searchResults.map((result, index) => {
+                  return (
+                    <button
+                      className="mb-1.5 grid w-full cursor-pointer gap-1 rounded-md border border-transparent bg-[#0f1628] px-2 py-1.5 text-left text-[#c6d3ea] hover:border-[#2a3a59] hover:bg-[#18243b]"
+                      key={`${result.path}:${result.line}:${result.column}:${index}`}
+                      onClick={() => setActivePath(result.path)}
+                      type="button"
+                    >
+                      <span className="truncate text-[11px] text-[#8ea0c6]">
+                        {result.path.replace(/^\//, "")}:{result.line}:{result.column}
+                      </span>
+                      <span className="truncate text-[12px]">{result.preview}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
           ) : (
             <div className="flex min-h-0 flex-1 flex-col gap-1 overflow-auto p-2">
               {files.map((file) => {
                 const isActive = file.path === activePath;
+                const isDirty = dirtyPaths.includes(file.path);
 
                 return (
                   <div
@@ -477,6 +784,7 @@ export function WorkspaceShell() {
                       type="button"
                     >
                       {file.path.replace(/^\//, "")}
+                      {isDirty ? " *" : ""}
                     </button>
                     <button
                       aria-label={`Delete ${file.path}`}
@@ -517,6 +825,7 @@ export function WorkspaceShell() {
         >
           <div className="flex items-center border-b border-[#2a3040] bg-[#111725] px-3 text-[12px] text-[#aeb9d2]">
             {activePath || "untitled"}
+            {isFileDirty ? " *" : ""}
           </div>
 
           <div className="min-h-0 border-b border-[#2a3040] bg-[#0f1320]">
@@ -549,6 +858,24 @@ export function WorkspaceShell() {
             <div className="flex items-center justify-between border-b border-[#23293a] px-3 text-[12px] text-[#8f9bb3]">
               <span>TERMINAL</span>
               <div className="flex gap-2">
+                <button
+                  aria-label="Save All"
+                  className={iconBtnClass}
+                  onClick={handleSaveAll}
+                  title="Save All (Ctrl/Cmd + S)"
+                  type="button"
+                >
+                  <SaveIcon className="size-[15px]" />
+                </button>
+                <button
+                  aria-label="Rollback Snapshot"
+                  className={iconBtnClass}
+                  onClick={handleRollbackSnapshot}
+                  title="Rollback Snapshot"
+                  type="button"
+                >
+                  <HistoryIcon className="size-[15px]" />
+                </button>
                 <button
                   aria-label={isTerminalMinimized ? "Expand Terminal" : "Minimize Terminal"}
                   className={iconBtnClass}
@@ -618,6 +945,59 @@ export function WorkspaceShell() {
           </div>
         </section>
       </div>
+
+      {showCommandPalette ? (
+        <div
+          className="absolute inset-0 z-30 grid place-items-start bg-[rgba(4,8,15,0.55)] px-4 pt-14"
+          onClick={(event) => {
+            if (event.target === event.currentTarget) {
+              setShowCommandPalette(false);
+            }
+          }}
+          onKeyDown={(event) => {
+            if (event.key === "Escape") {
+              setShowCommandPalette(false);
+            }
+          }}
+          aria-modal="true"
+          role="dialog"
+          tabIndex={0}
+        >
+          <div className="w-full max-w-[620px] overflow-hidden rounded-xl border border-[#2a3a58] bg-[#0f1627] shadow-[0_20px_60px_rgba(0,0,0,0.55)]">
+            <div className="border-b border-[#22314d] px-3 py-2.5">
+              <input
+                className="w-full border-0 bg-transparent text-[13px] text-[#d9e6ff] outline-none"
+                onChange={(event) => setPaletteQuery(event.target.value)}
+                onKeyDown={onPaletteInputKeyDown}
+                placeholder="Type a command... (Ctrl/Cmd + Shift + P)"
+                ref={paletteInputRef}
+                value={paletteQuery}
+              />
+            </div>
+            <div className="max-h-[320px] overflow-auto p-2">
+              {filteredPaletteCommands.map((command, index) => {
+                return (
+                  <button
+                    className={`mb-1 block w-full cursor-pointer rounded-md border px-2.5 py-2 text-left text-[12px] ${
+                      command.disabled
+                        ? "cursor-not-allowed border-transparent bg-[#111a2b] text-[#6c7994]"
+                        : "border-transparent bg-[#111a2b] text-[#d4e3ff] hover:border-[#2a3d61] hover:bg-[#18253d]"
+                    }`}
+                    key={command.id}
+                    onClick={() => runPaletteCommand(index)}
+                    type="button"
+                  >
+                    {command.label}
+                  </button>
+                );
+              })}
+              {filteredPaletteCommands.length === 0 ? (
+                <div className="px-2 py-3 text-[12px] text-[#7d8ca8]">No matching commands.</div>
+              ) : null}
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

@@ -1,17 +1,24 @@
 import { create } from "zustand";
 import { createDefaultVfs, VirtualFileSystem } from "../../filesystem/vfs";
 import type { FileNode } from "../../filesystem/types";
-import { loadWorkspace, saveWorkspace } from "../../persistence/workspaceStore";
+import {
+  loadPreviousWorkspaceSnapshot,
+  loadWorkspace,
+  saveWorkspace,
+} from "../../persistence/workspaceStore";
 
 interface WorkspaceState {
   vfs: VirtualFileSystem;
   files: FileNode[];
   activePath: string;
+  dirtyPaths: string[];
   terminalOutput: string;
   setActivePath: (path: string) => void;
   writeActiveFile: (content: string) => void;
   addFile: (path: string) => void;
   deleteFile: (path: string) => void;
+  saveAll: () => void;
+  rollbackToPreviousSnapshot: () => boolean;
   appendTerminalOutput: (text: string) => void;
   appendTerminalLine: (line: string) => void;
   clearTerminalOutput: () => void;
@@ -36,10 +43,19 @@ function hydrateVfs(): { vfs: VirtualFileSystem; files: FileNode[]; activePath: 
 
 const initial = hydrateVfs();
 
+function addDirtyPath(dirtyPaths: string[], path: string): string[] {
+  if (dirtyPaths.includes(path)) {
+    return dirtyPaths;
+  }
+
+  return [...dirtyPaths, path];
+}
+
 export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   vfs: initial.vfs,
   files: initial.files,
   activePath: initial.activePath,
+  dirtyPaths: [],
   terminalOutput: "",
 
   setActivePath: (path) => set({ activePath: path }),
@@ -48,8 +64,11 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     const state = get();
     state.vfs.writeFile(state.activePath, content);
     const files = state.vfs.listFiles();
-    saveWorkspace(files);
-    set({ files });
+
+    set({
+      files,
+      dirtyPaths: addDirtyPath(state.dirtyPaths, state.activePath),
+    });
   },
 
   addFile: (path) => {
@@ -57,7 +76,12 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     state.vfs.writeFile(path, "");
     const files = state.vfs.listFiles();
     saveWorkspace(files);
-    set({ files, activePath: path });
+
+    set({
+      files,
+      activePath: path,
+      dirtyPaths: addDirtyPath(state.dirtyPaths, path),
+    });
   },
 
   deleteFile: (path) => {
@@ -66,7 +90,38 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     const files = state.vfs.listFiles();
     const activePath = files[0]?.path ?? "";
     saveWorkspace(files);
-    set({ files, activePath });
+
+    set({
+      files,
+      activePath,
+      dirtyPaths: state.dirtyPaths.filter((entry) => entry !== path),
+    });
+  },
+
+  saveAll: () => {
+    const state = get();
+    saveWorkspace(state.files);
+    set({ dirtyPaths: [] });
+  },
+
+  rollbackToPreviousSnapshot: () => {
+    const previous = loadPreviousWorkspaceSnapshot();
+    if (!previous?.length) {
+      return false;
+    }
+
+    const vfs = new VirtualFileSystem(previous);
+    const files = vfs.listFiles();
+
+    set({
+      vfs,
+      files,
+      activePath: files[0]?.path ?? "",
+      dirtyPaths: [],
+      terminalOutput: "Rolled back to previous snapshot.\n",
+    });
+
+    return true;
   },
 
   appendTerminalOutput: (text) => {
@@ -92,7 +147,8 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       vfs,
       files,
       activePath: files[0]?.path ?? "",
-      terminalOutput: "Imported workspace.",
+      dirtyPaths: [],
+      terminalOutput: "Imported workspace.\n",
     });
   },
 }));
